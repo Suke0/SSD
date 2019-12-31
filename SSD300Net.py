@@ -18,6 +18,12 @@ class SSD300Net(tf.keras.Model):
                                 (207., 261.),
                                 (261., 315.)
                                 ],
+                 # anchor_sizes=[(30., 60.),
+                 #               (60., 111.),
+                 #               (111., 162.),
+                 #               (162., 213.),
+                 #               (213., 264.),
+                 #               (264., 315.)],
                  anchor_ratios=[ [2, .5],
                                  [2, .5, 3, 1./3],
                                  [2, .5, 3, 1./3],
@@ -28,6 +34,26 @@ class SSD300Net(tf.keras.Model):
                  ):
         super(SSD300Net, self).__init__()
         tf.keras.backend.set_learning_phase(training)
+        #38*38特征图的4个先验框的宽高
+        self.anchors = []
+
+        for anchor_size,anchor_ratio in zip(anchor_sizes, anchor_ratios):
+            feat_anchors = []
+            feat_anchors.append([anchor_size[0], anchor_size[0]])
+            for val in anchor_ratio:
+                feat_anchors.append([anchor_size[0] * np.sqrt(val), anchor_size[0] / np.sqrt(val)])
+                pass
+            feat_anchors.append([anchor_size[1], anchor_size[1]])
+            self.anchors.append(feat_anchors)
+            pass
+
+        print(np.array(np.array(self.anchors)[0]).shape)
+        print(np.array(np.array(self.anchors)[1]).shape)
+        print(np.array(np.array(self.anchors)[2]).shape)
+        print(np.array(np.array(self.anchors)[3]).shape)
+        print(np.array(np.array(self.anchors)[4]).shape)
+        print(np.array(np.array(self.anchors)[5]).shape)
+
         self.n_classes = n_classes
         self.anchor_sizes = anchor_sizes,
         self.anchor_ratios = anchor_ratios,
@@ -93,34 +119,69 @@ class SSD300Net(tf.keras.Model):
         #cls_preds.shape=[(2,38,38,4,21),(2,19,19,6,21),(2,10,10,6,21),(2,5,5,6,21),(2,3,3,4,21),(2,1,1,4,21)]
         pass
 
+    def predict(self, input_tensor):
+        loc_preds, cls_preds, softmax_cls_preds = self.call(input_tensor)
+        # loc_preds[0]: (2, 38, 38, 4, 4)
+        # loc_preds[1]: (2, 19, 19, 6, 4)
+        # loc_preds[2]: (2, 10, 10, 6, 4)
+        # loc_preds[3]: (2, 5, 5, 6, 4)
+        # loc_preds[4]: (2, 3, 3, 4, 4)
+        # loc_preds[5]: (2, 1, 1, 4, 4)
+        # cls_preds[0]: (2, 38, 38, 4, 21)
+        # cls_preds[1]: (2, 19, 19, 6, 21)
+        # cls_preds[2]: (2, 10, 10, 6, 21)
+        # cls_preds[3]: (2, 5, 5, 6, 21)
+        # cls_preds[4]: (2, 3, 3, 4, 21)
+        # cls_preds[5]: (2, 1, 1, 4, 21)
+        #prediction4 = tf.concat([loc_preds[0], softmax_cls_preds[0]], -1)
+        #prediction4 = tf.reshape(prediction4,(prediction4.shape[0], -1, prediction4.shape[-1]))
+        #prediction7 = tf.concat([loc_preds[1], softmax_cls_preds[1]], -1)
+        #prediction7 = tf.reshape(prediction7, (prediction7.shape[0], -1, prediction7.shape[-1]))
+        #prediction8 = tf.concat([loc_preds[2], softmax_cls_preds[2]], -1)
+        #prediction8 = tf.reshape(prediction8, (prediction8.shape[0], -1, prediction8.shape[-1]))
+        #prediction9 = tf.concat([loc_preds[3], softmax_cls_preds[3]], -1)
+        #prediction9 = tf.reshape(prediction9, (prediction9.shape[0], -1, prediction9.shape[-1]))
+        #prediction10 = tf.concat([loc_preds[4], softmax_cls_preds[4]], -1)
+        #prediction10 = tf.reshape(prediction10, (prediction10.shape[0], -1, prediction10.shape[-1]))
+        #prediction11 = tf.concat([loc_preds[5], softmax_cls_preds[5]], -1)
+        #prediction11 = tf.reshape(prediction11, (prediction11.shape[0], -1, prediction11.shape[-1]))
+        #predictions = tf.concat([prediction4,prediction7,prediction8,prediction9,prediction10,prediction11],1)
+        #print(predictions.shape)
+        return loc_preds, softmax_cls_preds
+        pass
 
-        def predict(self, input_tensor):
-            loc_preds, cls_preds, softmax_cls_preds = self.call(input_tensor)
-            return loc_preds, cls_preds, softmax_cls_preds
+    def detect(self,new_img,net_size=(300,300)):
+        #image = cv2.imread(img_name)
+        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #image_h,image_w,_=image.shape
+        #preprocess_img = cv2.resize(image/255.,net_size)
+        #new_img = np.expand_dims(preprocess_img,axis=0)
+        loc_preds, cls_preds = self.predict(new_img)
+        loc_preds_ = []
+        for pred, anchor in zip(loc_preds, self.anchors):
+            loc_preds_.append(self.bbox_converse(pred, anchor))
             pass
+        pass
 
+    def bbox_converse(self, pred, anchor):
+        #pred : (2,38,38,4,4)
+        center_x_y, w_h = tf.split(pred, [2, 2], axis=-1)
+        grid_x = range(0,center_x_y.shape[1])
+        grid_y = range(0,center_x_y.shape[2])
+        a, b = tf.meshgrid(grid_x,grid_y)
+        x_offset = tf.reshape(a,(-1,1))
+        y_offset = tf.reshape(b,(-1,1))
+        x_y_offset = tf.concat([x_offset,y_offset],-1)
+        x_y_offset = tf.tile(x_y_offset,[center_x_y.shape[0],center_x_y.shape[-2]])
+        x_y_offset = tf.reshape(x_y_offset,center_x_y.shape)
+        anchor_wh = tf.tile(anchor, [np.prod(center_x_y.shape[0:3]), 1])
+        anchor_wh = tf.reshape(anchor_wh, w_h.shape)
+        center_x_y = center_x_y * anchor_wh + tf.cast(x_y_offset,tf.float32)
+        w_h = anchor_wh * tf.exp(w_h)
+        pred = tf.concat([center_x_y,w_h],-1)
+        return pred
+        pass
 
-        #Compute the default anchor boxes, given an image shape.
-        # def detect(self, image, anchors, net_size=(300,300)):
-        #     image_h,image_w = image.shape
-        #     preprocess_img = cv2.resize(image/255.,net_size)
-        #     new_image = np.expand_dims(preprocess_img,axis=0)
-        #     ys = self.predict(new_image)
-        #     scores, bboxs =
-        #
-        #
-        #     pass
-        #
-        # def bboxes_select(self, softmax_cls_preds, loc_preds, select_threshold=None, num_classes=21):
-        #     l_scores = []
-        #     l_bboxes = []
-        #     cls_shape = softmax_cls_preds.shape
-        #     loc_shape = loc_preds.shape
-        #     for i in range(len(softmax_cls_preds)):
-        #         scores, bboxes =
-        #
-        #         pass
-        #     pass
 
     pass
 
@@ -130,7 +191,7 @@ if __name__ == "__main__":
     print(x.shape)
     print(x.get_shape().as_list()[1:-1])
     model = SSD300Net()
-    loc_preds, cls_preds, softmax_cls_preds = model(input)
+    model.detect(input)
     # loc_preds[0]: (2, 38, 38, 4, 4)
     # loc_preds[1]: (2, 19, 19, 6, 4)
     # loc_preds[2]: (2, 10, 10, 6, 4)
@@ -143,16 +204,23 @@ if __name__ == "__main__":
     # cls_preds[3]: (2, 5, 5, 6, 21)
     # cls_preds[4]: (2, 3, 3, 4, 21)
     # cls_preds[5]: (2, 1, 1, 4, 21)
-    print(f"loc_preds:{loc_preds[0].shape}")
-    print(f"loc_preds:{loc_preds[1].shape}")
-    print(f"loc_preds:{loc_preds[2].shape}")
-    print(f"loc_preds:{loc_preds[3].shape}")
-    print(f"loc_preds:{loc_preds[4].shape}")
-    print(f"loc_preds:{loc_preds[5].shape}")
-    print(f"cls_preds:{cls_preds[0].shape}")
-    print(f"cls_preds:{cls_preds[1].shape}")
-    print(f"cls_preds:{cls_preds[2].shape}")
-    print(f"cls_preds:{cls_preds[3].shape}")
-    print(f"cls_preds:{cls_preds[4].shape}")
-    print(f"cls_preds:{cls_preds[5].shape}")
+    # print(f"loc_preds:{loc_preds[0].shape}")
+    # print(f"loc_preds:{loc_preds[1].shape}")
+    # print(f"loc_preds:{loc_preds[2].shape}")
+    # print(f"loc_preds:{loc_preds[3].shape}")
+    # print(f"loc_preds:{loc_preds[4].shape}")
+    # print(f"loc_preds:{loc_preds[5].shape}")
+    # print(f"cls_preds:{cls_preds[0].shape}")
+    # print(f"cls_preds:{cls_preds[1].shape}")
+    # print(f"cls_preds:{cls_preds[2].shape}")
+    # print(f"cls_preds:{cls_preds[3].shape}")
+    # print(f"cls_preds:{cls_preds[4].shape}")
+    # print(f"cls_preds:{cls_preds[5].shape}")
+    # tem = tf.concat([loc_preds[0], cls_preds[0]],-1)
+    # tem = tf.reshape(tem,(tem.shape[0], -1, tem.shape[-1]))
+    # print(tem.shape)
+    # x = range(0, 13)
+    # y = range(0, 13)
+    # a, b = tf.meshgrid(x, y)
+
     pass
