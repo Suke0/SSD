@@ -258,6 +258,8 @@ class SSD300Net(tf.keras.Model):
 
         unique_classes = list(set(classes.reshape(-1)))
         for cls in unique_classes:
+            if cls == 0:
+                continue
             cls_mask = classes == cls
             cls_boxes = bbox_attrs[np.nonzero(cls_mask)]#获取每个预测框的(x1,y1,x2,y2)
             cls_probs = bbox_classes[np.nonzero(cls_mask)][:, cls] #获取每个预测框的类别概率中的最大概率值
