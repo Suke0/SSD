@@ -1,4 +1,6 @@
 #-- coding: utf-8 --
+import glob
+
 import cv2
 import tensorflow as tf
 from Vgg300Net import Vgg300Net
@@ -134,29 +136,15 @@ class SSD300Net(tf.keras.Model):
         # cls_preds[3]: (2, 5, 5, 6, 21)
         # cls_preds[4]: (2, 3, 3, 4, 21)
         # cls_preds[5]: (2, 1, 1, 4, 21)
-        #prediction4 = tf.concat([loc_preds[0], softmax_cls_preds[0]], -1)
-        #prediction4 = tf.reshape(prediction4,(prediction4.shape[0], -1, prediction4.shape[-1]))
-        #prediction7 = tf.concat([loc_preds[1], softmax_cls_preds[1]], -1)
-        #prediction7 = tf.reshape(prediction7, (prediction7.shape[0], -1, prediction7.shape[-1]))
-        #prediction8 = tf.concat([loc_preds[2], softmax_cls_preds[2]], -1)
-        #prediction8 = tf.reshape(prediction8, (prediction8.shape[0], -1, prediction8.shape[-1]))
-        #prediction9 = tf.concat([loc_preds[3], softmax_cls_preds[3]], -1)
-        #prediction9 = tf.reshape(prediction9, (prediction9.shape[0], -1, prediction9.shape[-1]))
-        #prediction10 = tf.concat([loc_preds[4], softmax_cls_preds[4]], -1)
-        #prediction10 = tf.reshape(prediction10, (prediction10.shape[0], -1, prediction10.shape[-1]))
-        #prediction11 = tf.concat([loc_preds[5], softmax_cls_preds[5]], -1)
-        #prediction11 = tf.reshape(prediction11, (prediction11.shape[0], -1, prediction11.shape[-1]))
-        #predictions = tf.concat([prediction4,prediction7,prediction8,prediction9,prediction10,prediction11],1)
-        #print(predictions.shape)
         return loc_preds, softmax_cls_preds
         pass
 
-    def detect(self,new_img,net_size=(300,300)):
-        #image = cv2.imread(img_name)
-        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        #image_h,image_w,_=image.shape
-        #preprocess_img = cv2.resize(image/255.,net_size)
-        #new_img = np.expand_dims(preprocess_img,axis=0)
+    def detect(self,img_name,net_size=(300,300)):
+        image = cv2.imread(img_name)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_h,image_w,_=image.shape
+        preprocess_img = cv2.resize(image/255.,net_size)
+        new_img = np.expand_dims(preprocess_img,axis=0)
         loc_preds, cls_preds = self.predict(new_img)
         loc_preds_ = []
         for pred, anchor in zip(loc_preds, self.anchors):
@@ -165,20 +153,20 @@ class SSD300Net(tf.keras.Model):
         preds  = []
         for loc_pred, cls_pred in zip(loc_preds_, cls_preds):
             pred = tf.concat([loc_pred,cls_pred],-1)
-            pred = tf.reshape(pred,[pred.shape[0],-1,pred.shape[-1]])
+            pred = tf.reshape(pred,[-1,pred.shape[-1]])
             print(f'pred.shape:{pred.shape}')
-            # pred.shape: (2, 5776, 25)
-            # pred.shape: (2, 2166, 25)
-            # pred.shape: (2, 600, 25)
-            # pred.shape: (2, 150, 25)
-            # pred.shape: (2, 36, 25)
-            # pred.shape: (2, 4, 25)
+            # pred.shape: (5776, 25)
+            # pred.shape: (2166, 25)
+            # pred.shape: (600, 25)
+            # pred.shape: (150, 25)
+            # pred.shape: (36, 25)
+            # pred.shape: (4, 25)
             preds.append(pred)
             pass
-        predictions = tf.concat(preds,1)
+        predictions = tf.concat(preds,0)#predictions.shape:(8732, 25)
         detected_boxes = self.detections_boxes(predictions,net_size)
         print(f'predictions.shape:{predictions.shape}')
-        #predictions.shape:(2, 8732, 25)
+
         conf_threshold = 0.5  # 置信度阈值
         iou_threshold = 0.4  # 重叠区域阈值
         filtered_boxes = self.non_max_suppression(detected_boxes, confidence_threshold=conf_threshold, iou_threshold=iou_threshold)
@@ -186,7 +174,7 @@ class SSD300Net(tf.keras.Model):
         pass
 
     def bbox_converse(self, pred, anchor, net_size):
-        #pred : (2,38,38,4,4)
+        #pred : (1,38,38,4,4)
         center_x_y, w_h = tf.split(pred, [2, 2], axis=-1)
         grid_x = range(0,center_x_y.shape[1])
         grid_y = range(0,center_x_y.shape[2])
@@ -241,50 +229,56 @@ class SSD300Net(tf.keras.Model):
         return iou
 
     # 使用NMS方法，对结果去重
-    def non_max_suppression(self, predictions_with_boxes, confidence_threshold, iou_threshold=0.4):
+    def non_max_suppression(self, predictions_with_boxes, confidence_threshold=0.5, iou_threshold=0.4):
+        #过滤掉检测为背景的bbox
+        predictions_part = predictions_with_boxes[:, 4:]  # 单张图片检测
+        idxs = tf.argmax(predictions_part, -1)
+        obj_mask = tf.where(idxs == 0, 0, 1)
+        obj_mask = tf.expand_dims(obj_mask, -1)
+        predictions_with_boxes = predictions_with_boxes * tf.cast(obj_mask, dtype=tf.float32)
+        predictions_with_boxes = predictions_with_boxes.numpy()
+        non_zero_idxs = np.nonzero(predictions_with_boxes)
+        non_zero_idx = list(set(non_zero_idxs[0]))
+        predictions_with_boxes = predictions_with_boxes[non_zero_idx]
+        print(predictions_with_boxes.shape)
 
-        predictions_part1 = predictions_with_boxes[:, :, 0:5]
-        conf_mask = predictions_with_boxes[:, :, 5:] > confidence_threshold
-        predictions_part2 = predictions_with_boxes[:, :, 5:] * conf_mask
+
+        #将概率小于阈值confidence_threshold的bbox的概率置为0
+        predictions_part1 = predictions_with_boxes[:, 0:4]
+        predictions_part2 = predictions_with_boxes[:, 4:]
+        conf_mask = tf.where(predictions_part2 > confidence_threshold, 1, 0)
+        predictions_part2 = tf.cast(predictions_part2, dtype=tf.float32) * tf.cast(conf_mask, dtype=tf.float32)
         predictions = tf.concat([predictions_part1,predictions_part2],-1)
         predictions = predictions.numpy()
         result = {}
-        for i, image_pred in enumerate(predictions):
-            shape = image_pred.shape
-            print("shape1", shape)
-            non_zero_idxs = np.nonzero(image_pred)
 
-            idx = list(set(non_zero_idxs[0]))
-            # idx = non_zero_idxs[0]
-            image_pred = image_pred[idx]
-            print("shape2", image_pred.shape)
-            image_pred = image_pred.reshape(-1, shape[-1])
+        bbox_attrs = predictions[:, 0:4]
+        bbox_classes = predictions[:, 4:]
+        classes = np.argmax(bbox_classes, axis=-1)
 
-            bbox_attrs = image_pred[:, :5]
-            classes = image_pred[:, 5:]
-            classes = np.argmax(classes, axis=-1)
+        unique_classes = list(set(classes.reshape(-1)))
+        for cls in unique_classes:
+            cls_mask = classes == cls
+            cls_boxes = bbox_attrs[np.nonzero(cls_mask)]#获取每个预测框的(x1,y1,x2,y2)
+            cls_probs = bbox_classes[np.nonzero(cls_mask)][:, cls] #获取每个预测框的类别概率中的最大概率值
+            cls_probs = np.expand_dims(cls_probs, -1)
+            cls_boxes = np.concatenate((cls_boxes, cls_probs), -1)#将每个预测框的(x1,y1,x2,y2)与prob合并，便于NMS
+            cls_boxes = cls_boxes[cls_boxes[:, -1].argsort()[::-1]]
 
-            unique_classes = list(set(classes.reshape(-1)))
+            cls_scores = cls_boxes[:, -1]
+            cls_boxes = cls_boxes[:, :-1]
 
-            for cls in unique_classes:
-                cls_mask = classes == cls
-                cls_boxes = bbox_attrs[np.nonzero(cls_mask)]
-                cls_boxes = cls_boxes[cls_boxes[:, -1].argsort()[::-1]]
-                cls_scores = cls_boxes[:, -1]
-                cls_boxes = cls_boxes[:, :-1]
-
-                while len(cls_boxes) > 0:
-                    box = cls_boxes[0]
-                    score = cls_scores[0]
-                    if not cls in result:
-                        result[cls] = []
-                    result[cls].append((box, score))
-                    cls_boxes = cls_boxes[1:]
-                    ious = np.array([self.iou(box, x) for x in cls_boxes])
-                    iou_mask = ious < iou_threshold
-                    cls_boxes = cls_boxes[np.nonzero(iou_mask)]
-                    cls_scores = cls_scores[np.nonzero(iou_mask)]
-
+            while len(cls_boxes) > 0:
+                box = cls_boxes[0]
+                score = cls_scores[0]
+                if not cls in result:
+                    result[cls] = []
+                result[cls].append((box, score))
+                cls_boxes = cls_boxes[1:]
+                ious = np.array([self.iou(box, x) for x in cls_boxes])
+                iou_mask = ious < iou_threshold
+                cls_boxes = cls_boxes[np.nonzero(iou_mask)]
+                cls_scores = cls_scores[np.nonzero(iou_mask)]
         return result
 
     def convert_to_original_size(self, box, size, original_size):
@@ -310,13 +304,15 @@ class SSD300Net(tf.keras.Model):
     pass
 
 if __name__ == "__main__":
-    input = np.random.randn(2,300,300,3)
-    input = tf.constant(input,dtype=tf.float32)
-    x = tf.constant(input,dtype=tf.float32)
-    print(x.shape)
-    print(x.get_shape().as_list()[1:-1])
-    model = SSD300Net()
-    model.detect(input)
+    #import os
+    #data_file = os.path.dirname(__file__)
+    #img_dir = os.path.join(data_file,"data","test","*jpg")
+    #img_fnames = glob.glob(img_dir)
+    #model = SSD300Net()
+    #predictions_with_boxes = np.random.random((8732, 25))
+    #res = model.detect(img_fnames[0])
+    #model.non_max_suppression(predictions_with_boxes)
+    #print(res.shape)
     # loc_preds[0]: (2, 38, 38, 4, 4)
     # loc_preds[1]: (2, 19, 19, 6, 4)
     # loc_preds[2]: (2, 10, 10, 6, 4)
@@ -329,23 +325,4 @@ if __name__ == "__main__":
     # cls_preds[3]: (2, 5, 5, 6, 21)
     # cls_preds[4]: (2, 3, 3, 4, 21)
     # cls_preds[5]: (2, 1, 1, 4, 21)
-    # print(f"loc_preds:{loc_preds[0].shape}")
-    # print(f"loc_preds:{loc_preds[1].shape}")
-    # print(f"loc_preds:{loc_preds[2].shape}")
-    # print(f"loc_preds:{loc_preds[3].shape}")
-    # print(f"loc_preds:{loc_preds[4].shape}")
-    # print(f"loc_preds:{loc_preds[5].shape}")
-    # print(f"cls_preds:{cls_preds[0].shape}")
-    # print(f"cls_preds:{cls_preds[1].shape}")
-    # print(f"cls_preds:{cls_preds[2].shape}")
-    # print(f"cls_preds:{cls_preds[3].shape}")
-    # print(f"cls_preds:{cls_preds[4].shape}")
-    # print(f"cls_preds:{cls_preds[5].shape}")
-    # tem = tf.concat([loc_preds[0], cls_preds[0]],-1)
-    # tem = tf.reshape(tem,(tem.shape[0], -1, tem.shape[-1]))
-    # print(tem.shape)
-    # x = range(0, 13)
-    # y = range(0, 13)
-    # a, b = tf.meshgrid(x, y)
-
     pass
